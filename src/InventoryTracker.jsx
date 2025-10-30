@@ -1,11 +1,17 @@
 /* global __firebase_config, __initial_auth_token, __app_id */
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
-// IMPORTANT: Import browserLocalPersistence for persistence setting
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { getFirestore, collection, query, onSnapshot, doc, addDoc, serverTimestamp, setDoc, getDocs, where } from 'firebase/firestore';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, enableIndexedDbPersistence, disableNetwork } from 'firebase/firestore';
+import { getAuth, setPersistence, browserLocalPersistence, onAuthStateChanged } from 'firebase/auth';
+
 import { BarChart, Bar, PieChart, Pie, XAxis, YAxis, Tooltip, Legend, CartesianGrid, ResponsiveContainer, Cell } from 'recharts';
 import { Download, ShoppingCart, TrendingUp, DollarSign, Plus } from 'lucide-react';
+import app from './firebase-config';
+import { localfirebaseconfig } from './localfirebaseconfig';
+import Trend from './components/Trend';
+import TrendsButton from './components/TrendsButton';
+import Trends from './components/Trends';
+import './styles/Tables.css';
 
 // --- Global Constants and Firebase Setup ---
 
@@ -82,11 +88,11 @@ const exportToCsv = (data, filename) => {
 const App = () => {
   const [db, setDb] = useState(null);
   const [auth, setAuth] = useState(null);
-  const [userId, setUserId] = useState(null);
+  const [user, setUser] = useState(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-
   const [stocks, setStocks] = useState([]);
   const [sales, setSales] = useState([]);
+  const [currentStockByProductAndSize, setCurrentStockByProductAndSize] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentView, setCurrentView] = useState('stock'); // 'stock', 'sale', 'trends'
 
@@ -95,66 +101,50 @@ const App = () => {
 
   // --- 1. Firebase Initialization and Authentication (FIXED FOR PERSISTENCE) ---
   useEffect(() => {
-    try {
-      if (!firebaseConfig || !firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY") {
-        console.error("Firebase config not available or incomplete. Please check localFirebaseConfig.");
-        return; 
+    const initializeFirebase = async () => {
+      try {
+        // Check if Firebase is already initialized
+        const app = !getApps().length 
+          ? initializeApp(localfirebaseconfig)
+          : getApp();
+
+        const firestore = getFirestore(app);
+        const auth = getAuth(app);
+        
+        await setPersistence(auth, browserLocalPersistence);
+
+        setDb(firestore);
+        setAuth(auth);
+        setIsAuthReady(true);
+      } catch (error) {
+        console.error('Firebase initialization error:', error);
       }
-      const app = initializeApp(firebaseConfig);
-      const firestore = getFirestore(app);
-      const firebaseAuth = getAuth(app);
-      
-      setDb(firestore);
-      setAuth(firebaseAuth);
+    };
 
-      // Ensure persistence is set to LOCAL to persist across browser restarts
-      setPersistence(firebaseAuth, browserLocalPersistence)
-        .then(() => {
-          console.log("Firebase Auth Persistence set to LOCAL.");
-        })
-        .catch((error) => {
-          console.error("Error setting persistence:", error);
-        });
-      
-
-      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
-        if (user) {
-          // User is signed in (either from a previous anonymous session or custom token)
-          setUserId(user.uid);
-          setIsAuthReady(true);
-        } else {
-          // No user is currently signed in. Attempt to sign in.
-          try {
-            if (initialAuthToken) {
-              // 1. Use custom token if provided (e.g., deployed environment)
-              await signInWithCustomToken(firebaseAuth, initialAuthToken);
-            } else {
-              // 2. Fallback to anonymous sign-in.
-              // Firebase's persistence will reuse the existing anonymous user if found in storage.
-              await signInAnonymously(firebaseAuth);
-            }
-          } catch (e) {
-            console.error("Error during initial sign-in:", e);
-          }
-        }
-      });
-
-      return () => unsubscribe(); // Cleanup the listener
-      
-    } catch (e) {
-      console.error("Firebase Initialization Failed:", e);
-    }
+    initializeFirebase();
   }, []); // Empty dependency array means this runs only once on mount
+
+  // Handle auth state changes
+  useEffect(() => {
+    if (!auth) return;
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [auth]);
 
   // --- 2. Real-time Data Fetching (Stocks and Sales) ---
   useEffect(() => {
     // Only run if Firebase is initialized and authentication is ready
-    if (!db || !isAuthReady || !userId) return; 
+    if (!db || !isAuthReady || !user) return; 
 
     setLoading(true);
 
-    const stockPath = getCollectionPath(userId, 'inventory_stocks');
-    const salesPath = getCollectionPath(userId, 'inventory_sales');
+    const stockPath = getCollectionPath(user.uid, 'inventory_stocks');
+    const salesPath = getCollectionPath(user.uid, 'inventory_sales');
 
     // Listener for Stocks
     const unsubscribeStocks = onSnapshot(collection(db, stockPath), (snapshot) => {
@@ -190,7 +180,7 @@ const App = () => {
       unsubscribeStocks();
       unsubscribeSales();
     };
-  }, [db, userId, isAuthReady]);
+  }, [db, user]);
 
   // --- 3. Stock Update Form Logic ---
   const StockForm = ({ onToggleView }) => {
@@ -245,7 +235,7 @@ const App = () => {
       return { 
         totalGoodsCost: Math.max(0, totalGoodsCost).toFixed(2), 
         overallTotalCost: Math.max(0, overallTotal).toFixed(2) 
-      };
+     };
     }, [formData.stockCounts, formData.costPerPiece, formData.discountAmount, formData.gstAmount, formData.transportCost, formData.stallRent]);
 
     useEffect(() => {
@@ -254,12 +244,12 @@ const App = () => {
           ...prev, 
           totalPurchaseAmount: totalGoodsCost, // Cost of Goods
           overallTotalCost: overallTotalCost    // Overall Expense
-      }));
+        }));
     }, [calculateTotalCosts]);
 
     const handleSubmit = async (e) => {
       e.preventDefault();
-      if (!db || !userId) return;
+      if (!db || !user) return;
 
       const totalPieces = Object.values(formData.stockCounts).reduce((a, b) => a + b, 0);
       if (totalPieces === 0) {
@@ -285,7 +275,7 @@ const App = () => {
       }
 
       try {
-        const docRef = collection(db, getCollectionPath(userId, 'inventory_stocks'));
+        const docRef = collection(db, getCollectionPath(user.uid, 'inventory_stocks'));
         await addDoc(docRef, {
           ...formData,
           productType: finalProductType, // Use the final, resolved product type
@@ -458,11 +448,11 @@ const App = () => {
 
     const handleSubmit = async (e) => {
       e.preventDefault();
-      if (!db || !userId) return;
+      if (!db || !user) return;
 
       setIsSaving(true);
       try {
-        const docRef = collection(db, getCollectionPath(userId, 'inventory_sales'));
+        const docRef = collection(db, getCollectionPath(user.uid, 'inventory_sales'));
         await addDoc(docRef, {
           ...formData,
           actualPrice: parseFloat(actualPrice) || 0, // Store the auto-filled actual price
@@ -695,6 +685,10 @@ const App = () => {
       </div>
     );
 
+    const renderTrendsView = () => {
+      return <Trend stockData={stocks} />;
+    };
+
     return (
       <div className="space-y-8">
         <h2 className="title-2xl">Sales and Inventory Trends</h2>
@@ -705,7 +699,7 @@ const App = () => {
                 This stacked chart shows the **Remaining Stock Count** for each product type, with bars broken down by size.
             </p>
             <ResponsiveContainer width="100%" height={350}>
-                <BarChart data={currentStockByProductAndSize} margin={{ top: 10, right: 30, left: 20, bottom: 5 }}>
+                <BarChart data={currentStockByProductAndSize?.filter(Boolean) || []} margin={{ top: 10, right: 30, left: 20, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
                     <XAxis dataKey="name" stroke="#6b7280" angle={-15} textAnchor="end" height={60} interval={0} style={{ fontSize: '10px' }} />
                     <YAxis stroke="#6b7280" label={{ value: 'Units of Stock', angle: -90, position: 'insideLeft' }} />
@@ -713,12 +707,12 @@ const App = () => {
                     <Legend iconType="circle" />
                     
                     {/* Stacked Bars for each Size */}
-                    {SIZES.map((size, index) => (
+                    {SIZES?.map((size, index) => (
                         <Bar 
                             key={size} 
                             dataKey={size} 
                             stackId="a" 
-                            fill={COLORS[index % COLORS.length]} 
+                            fill={COLORS[index % COLORS.length] || '#000'} 
                             name={`Size ${size}`}
                         />
                     ))}
@@ -726,7 +720,7 @@ const App = () => {
             </ResponsiveContainer>
         </Card>
         
-        {/* EXISTING CHART: Financial Overview by Product Type (Revenue, Cost, Value) */}
+        {/* EXISTING CHART: Financial Overview by Product Type (Revenue, Cost, Remaining Value) */}
         <Card title="Financial Overview by Product Type (Revenue, Cost, Remaining Value)">
             <p className="text-sm text-gray-500 mb-4">Compares **Total Revenue**, **Total Goods Cost** (of sold items), and the calculated **Value of Stock Remaining** On Hand, grouped by Product Type.</p>
             <ResponsiveContainer width="100%" height={350}>
@@ -818,35 +812,46 @@ const App = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="table-head">
                   <tr>
-                    <TableHeader>Date</TableHeader>
-                    <TableHeader>By</TableHeader>
-                    <TableHeader>Product</TableHeader>
-                    <TableHeader>Cost/Piece (₹)</TableHeader>
-                    <TableHeader>Transport (₹)</TableHeader>
-                    <TableHeader>Rent (₹)</TableHeader>
-                    {SIZES.map(s => <TableHeader key={s}>Stock ({s})</TableHeader>)}
-                    <TableHeader>Overall Total (₹)</TableHeader>
+                    <th className="table-header">Date</th>
+                    <th className="table-header">By</th>
+                    <th className="table-header">Product</th>
+                    <th className="table-header">Cost/Piece (₹)</th>
+                    <th className="table-header">Transport (₹)</th>
+                    <th className="table-header">Rent (₹)</th>
+                    {SIZES.map(s => (
+                      <th key={s} className="table-header">Stock ({s})</th>
+                    ))}
+                    <th className="table-header">Overall Total (₹)</th>
                   </tr>
-                </thead> </table>
+                </thead>
                 <tbody className="table-body">
                   {stocks.map(s => (
                     <tr key={s.id} className="table-row">
-                      <TableData>{s.dateOfPurchase}</TableData>
-                      <TableData>{s.purchasedBy}</TableData>
-                      <TableData>{s.productType}</TableData>
-                      <TableData className="text-green-700 font-medium">{s.costPerPiece?.toFixed(2)}</TableData>
-                      <TableData>{s.transportCost?.toFixed(2) || '0.00'}</TableData>
-                      <TableData>{s.stallRent?.toFixed(2) || '0.00'}</TableData>
-                      {SIZES.map(size => <TableData key={size}>{s.stockCounts?.[size] || 0}</TableData>)}
-                      <TableData className="text-red-700 font-semibold">{s.overallTotalCost?.toFixed(2) || s.totalPurchaseAmount?.toFixed(2) || '0.00'}</TableData>
-                   </tr>
+                      <td className="table-data">{s.dateOfPurchase}</td>
+                      <td className="table-data">{s.purchasedBy}</td>
+                      <td className="table-data">{s.productType}</td>
+                      <td className="table-data text-green-700 font-medium">
+                        {s.costPerPiece?.toFixed(2)}
+                      </td>
+                      <td className="table-data">{s.transportCost?.toFixed(2) || '0.00'}</td>
+                      <td className="table-data">{s.stallRent?.toFixed(2) || '0.00'}</td>
+                      {SIZES.map(size => (
+                        <td key={size} className="table-data">
+                          {s.stockCounts?.[size] || 0}
+                        </td>
+                      ))}
+                      <td className="table-data text-red-700 font-semibold">
+                        {s.overallTotalCost?.toFixed(2) || s.totalPurchaseAmount?.toFixed(2) || '0.00'}
+                      </td>
+                    </tr>
                   ))}
-                 </tbody>
+                </tbody>
+              </table>
             </div>
           )}
         </Card>
 
-        {/* Sale Data Table */}
+        {/* Sales Data Table */}
         <Card title="Sale Transaction Records">
           <div className="flex justify-end mb-4">
             <button
@@ -864,27 +869,31 @@ const App = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="table-head">
                   <tr>
-                    <TableHeader>Date</TableHeader>
-                    <TableHeader>Sold By</TableHeader>
-                    <TableHeader>Product (Size)</TableHeader>
-                    <TableHeader>Cost Price (₹)</TableHeader>
-                    <TableHeader>Sold For (₹)</TableHeader>
-                    <TableHeader>Profit (₹)</TableHeader>
-                    <TableHeader>Payment</TableHeader>
+                    <th className="table-header">Date</th>
+                    <th className="table-header">Sold By</th>
+                    <th className="table-header">Product (Size)</th>
+                    <th className="table-header">Cost Price (₹)</th>
+                    <th className="table-header">Sold For (₹)</th>
+                    <th className="table-header">Profit (₹)</th>
+                    <th className="table-header">Payment</th>
                   </tr>
                 </thead>
                 <tbody className="table-body">
                   {sales.map(s => (
                     <tr key={s.id} className="table-row">
-                      <TableData>{s.dateOfSale}</TableData>
-                      <TableData>{s.soldBy}</TableData>
-                      <TableData>{s.productType} ({s.size})</TableData>
-                      <TableData>{s.actualPrice?.toFixed(2)}</TableData>
-                      <TableData className="text-green-700 font-medium">{s.soldFor?.toFixed(2)}</TableData>
-                      <TableData className={s.soldFor > s.actualPrice ? "text-emerald-600 font-semibold" : "text-red-600 font-semibold"}>
-                        {(s.soldFor - s.actualPrice)?.toFixed(2)}
-                      </TableData>
-                      <TableData>{s.modeOfPayment}</TableData>
+                      <td className="table-data">{s.dateOfSale}</td>
+                      <td className="table-data">{s.soldBy}</td>
+                      <td className="table-data">{s.productType} ({s.size})</td>
+                      <td className="table-data">{s.actualPrice?.toFixed(2)}</td>
+                      <td className="table-data text-green-700 font-medium">
+                        {s.soldFor?.toFixed(2)}
+                      </td>
+                      <td classNam={`table-data ${
+                      s.soldFor > s.actualPrice ? "text-emerald-600" : "text-red-600"
+                    } font-semibold`}>
+                      {(s.soldFor - s.actualPrice)?.toFixed(2)}
+                      </td>
+                      <td className="table-data">{s.modeOfPayment}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -976,7 +985,23 @@ const App = () => {
   );
 
 
-  // --- Main Render ---
+  // --- Retry Logic Constants and Functions ---
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000;
+
+const retryOperation = async (operation, retries = MAX_RETRIES) => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (retries > 0) {
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+      return retryOperation(operation, retries - 1);
+    }
+    throw error;
+  }
+};
+
+// --- Main Render ---
   return (
     <div className="app-container">
       <header className="header-container">
@@ -984,7 +1009,7 @@ const App = () => {
           Dress Business Inventory System
         </h1>
         <p className="text-gray-600">
-          Welcome, **User: {userId || 'Initializing...'}**. Manage your stock, sales, and track key trends.
+          Welcome, **User: {user?.uid || 'Initializing...'}**. Manage your stock, sales, and track key trends.
         </p>
       </header>
 
@@ -1017,3 +1042,4 @@ const App = () => {
 };
 
 export default App;
+

@@ -107,40 +107,32 @@
 }
 
 
-/* Table Styles */
+/*Table Styles */
 .table-container {
   overflow-x: auto;
-  border-radius: 0.5rem; /* rounded-lg */
-  border: 1px solid #e5e7eb; /* border border-gray-200 */
-}
-.table-head {
-  background-color: #f9fafb; /* bg-gray-50 */
-}
-.table-header {
-  padding: 0.75rem 1.5rem; /* py-3 px-6 */
-  text-align: left;
-  font-size: 0.75rem; /* text-xs */
-  font-weight: 500; /* font-medium */
-  color: #6b7280; /* text-gray-500 */
-  text-transform: uppercase;
-  letter-spacing: 0.05em; /* tracking-wider */
-}
-.table-body {
-  background-color: white;
-  divide-y: 1px;
-  divide-color: #e5e7eb; /* divide-gray-200 */
-}
-.table-row:hover {
-  background-color: #f9fafb; /* hover:bg-gray-50 */
-  transition: background-color 0.15s;
-}
-.table-data {
-  white-space: nowrap;
-  padding: 1rem 1.5rem; /* py-4 px-6 */
-  font-size: 0.875rem; /* text-sm */
-  color: #4b5563; /* text-gray-600 */
 }
 
+.table-header {
+  padding: 0.75rem;
+  text-align: left;
+  font-weight: 500;
+  color: #4b5563;
+  background-color: #f9fafb;
+}
+
+.table-data {
+  padding: 0.75rem;
+  white-space: nowrap;
+  color: #1f2937;
+}
+
+.table-row:nth-child(even) {
+  background-color: #f9fafb;
+}
+
+.table-row:hover {
+  background-color: #f3f4f6;
+}
 /* Buttons - Export */
 .button-export {
   background-color: #1d4ed8; /* bg-blue-600 */
@@ -183,3 +175,5 @@
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
+
+
